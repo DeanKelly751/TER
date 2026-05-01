@@ -40,6 +40,9 @@ class TERMonitor:
         self.config = config or self._get_default_config()
         self.on_alert_callback = on_alert
 
+        # Store learning config for sessions
+        self.learning_config = self.config.get("learning", {})
+
         # Initialize detectors based on config
         patterns_config = self.config.get("patterns", {})
         detectors = get_enabled_detectors(patterns_config)
@@ -71,7 +74,15 @@ class TERMonitor:
                 "edit_fragmentation": {"enabled": True, "min_consecutive": 3},
                 "bash_antipatterns": {"enabled": True},
                 "failed_tool_retries": {"enabled": True},
-            }
+            },
+            "learning": {
+                "enabled": True,
+                "auto_adjust_thresholds": True,
+                "min_sessions_before_adjust": 5,
+                "target_precision": 0.80,
+                "target_recall": 0.70,
+                "max_adjustment_per_session": 1,
+            },
         }
 
 
@@ -214,18 +225,25 @@ class TERSession:
         """Get current session metrics."""
         return self.engine.get_status(self.session_id)
 
-    def end(self, run_posthoc_analysis: bool = False) -> dict:
+    def end(
+        self,
+        run_posthoc_analysis: bool = False,
+        enable_learning: bool = True,
+        learning_config: dict | None = None,
+    ) -> dict:
         """End the session and optionally run post-hoc analysis.
 
         Args:
             run_posthoc_analysis: If True, runs full TER analysis with embeddings
-                                 (not implemented yet)
+            enable_learning: If True, uses feedback to adjust thresholds
+            learning_config: Optional learning config override
 
         Returns:
-            Dictionary with final session metrics
+            Dictionary with final session metrics and learning results
         """
-        # Get final status before ending
+        # Get final status and all alerts before ending
         status = self.get_status()
+        all_alerts = self.get_all_alerts()
 
         # End session and get JSONL snapshot
         snapshot_path = self.engine.end_session(self.session_id)
@@ -236,9 +254,57 @@ class TERSession:
         }
 
         if run_posthoc_analysis:
-            # TODO: Implement post-hoc analysis integration
-            logger.warning("Post-hoc analysis not yet implemented")
-            result["posthoc_analysis"] = None
+            try:
+                # Import learning components
+                from ..learning import (
+                    AdaptiveThresholdLearner,
+                    FeedbackMetrics,
+                    PostHocAnalyzer,
+                )
+
+                # Run post-hoc analysis
+                logger.info("Running post-hoc analysis with embeddings...")
+                analyzer = PostHocAnalyzer()
+                posthoc_result = analyzer.analyze_session(snapshot_path)
+
+                result["posthoc_ter"] = posthoc_result.aggregate_ter
+                result["posthoc_waste_tokens"] = sum(
+                    p.tokens_wasted for p in posthoc_result.waste_patterns
+                )
+                result["posthoc_pattern_count"] = len(posthoc_result.waste_patterns)
+
+                # Learning loop
+                if enable_learning:
+                    logger.info("Running learning feedback loop...")
+
+                    # Use provided learning config or defaults
+                    if learning_config is None:
+                        learning_config = {
+                            "auto_adjust_thresholds": True,
+                            "min_sessions_before_adjust": 5,
+                            "target_precision": 0.80,
+                            "target_recall": 0.70,
+                            "max_adjustment_per_session": 1,
+                        }
+
+                    # Compute feedback metrics
+                    metrics = FeedbackMetrics.compute(all_alerts, posthoc_result)
+                    result["feedback_metrics"] = metrics.to_dict()
+
+                    # Adaptive learning
+                    learner = AdaptiveThresholdLearner()
+                    adjustments = learner.learn_from_session(
+                        all_alerts, posthoc_result, learning_config
+                    )
+
+                    result["threshold_adjustments"] = adjustments
+                    result["learning_summary"] = learner.get_learning_summary()
+
+                    logger.info(f"Learning complete. Adjustments: {adjustments}")
+
+            except Exception as e:
+                logger.error(f"Post-hoc analysis/learning failed: {e}", exc_info=True)
+                result["posthoc_error"] = str(e)
 
         return result
 

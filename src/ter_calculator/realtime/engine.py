@@ -13,6 +13,7 @@ from .state import SessionState
 
 if TYPE_CHECKING:
     from ..models import Message
+    from .alerts.manager import AlertManager
     from .alerts.models import Alert
     from .detectors.base import PatternDetector
 
@@ -22,14 +23,20 @@ logger = logging.getLogger(__name__)
 class RealtimeEngine:
     """Orchestrates real-time pattern detection across sessions."""
 
-    def __init__(self, detectors: list["PatternDetector"] | None = None):
+    def __init__(
+        self,
+        detectors: list["PatternDetector"] | None = None,
+        alert_manager: "AlertManager" | None = None,
+    ):
         """Initialize engine with detectors.
 
         Args:
             detectors: List of pattern detectors to use. If None, no detectors are active.
+            alert_manager: Optional AlertManager for routing alerts. If None, alerts are not routed.
         """
         self.sessions: dict[str, SessionState] = {}
         self.detectors = detectors or []
+        self.alert_manager = alert_manager
 
     def start_session(self, session_id: str | None = None) -> SessionState:
         """Create new session state.
@@ -93,6 +100,14 @@ class RealtimeEngine:
 
         # Store alerts in state
         state.alerts.extend(alerts)
+
+        # Route alerts through AlertManager if available
+        if self.alert_manager:
+            for alert in alerts:
+                try:
+                    self.alert_manager.handle_alert(alert, state)
+                except Exception as e:
+                    logger.error(f"Alert routing failed: {e}", exc_info=True)
 
         return alerts
 

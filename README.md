@@ -1,6 +1,15 @@
 # TER Calculator
 
-Token Efficiency Ratio (TER) calculator for Claude Code sessions. Measures how efficiently an AI coding agent uses its token budget by classifying output token spans as **aligned** (contributing to the task) or **waste** (redundant reasoning, unnecessary tool calls, over-explanation), and surfaces the economics of each session -- cost, cache efficiency, context growth, and where waste concentrates. Supports grouped analysis of parent + subagent sessions and input-side analysis including prompt redundancy, intent drift, and prompt-response alignment.
+Token Efficiency Ratio (TER) calculator for Claude Code sessions. Measures how efficiently an AI coding agent uses its token budget by classifying output token spans as **aligned** (contributing to the task) or **waste** (redundant reasoning, unnecessary tool calls, over-explanation), and surfaces the economics of each session -- cost, cache efficiency, context growth, and where waste concentrates.
+
+**NEW:** ⚡ **Real-time waste prevention** - Detect and alert on wasteful patterns *as they happen* during Claude API sessions, with adaptive learning that improves detection accuracy over time.
+
+## Two Modes
+
+**1. Post-hoc Analysis** (classic TER) - Analyze completed sessions from JSONL files  
+**2. Real-time Monitoring** (new) - Prevent waste during active Claude API sessions
+
+See [TUTORIALS.md](TUTORIALS.md) for usage guides.
 
 ## Why TER?
 
@@ -46,7 +55,13 @@ pip install -e ".[dev]"
 
 ## Usage
 
-### Analyze a session
+> 💡 **Quick Start:** See [TUTORIALS.md](TUTORIALS.md) for step-by-step guides on both post-hoc analysis and real-time monitoring.
+
+### Post-Hoc Analysis (Classic TER)
+
+Analyze completed Claude Code sessions from JSONL files.
+
+#### Analyze a session
 
 ```bash
 ter analyze path/to/session.jsonl
@@ -131,6 +146,77 @@ ter report <path>
   -o, --output FILE          Write Markdown to FILE instead of stdout
   (same threshold/cost flags as analyze)
 ```
+
+### Real-Time Monitoring (NEW)
+
+Prevent waste during active Claude API sessions with real-time alerts and adaptive learning.
+
+#### Quick Example
+
+```python
+from ter_calculator.realtime import TERMonitor
+
+# Initialize monitor with desktop notifications
+monitor = TERMonitor(
+    on_alert=lambda alert: print(f"⚠️  {alert.suggestion}")
+)
+
+# Start monitoring session
+session = monitor.start_session()
+
+# In your Claude API loop:
+response = anthropic.messages.create(...)
+session.add_assistant_message(response)
+
+# Process tool results
+for block in response.content:
+    if block.type == "tool_use":
+        result = execute_tool(block)
+        session.add_tool_result(block.id, result)
+
+# End with learning
+final_report = session.end(
+    run_posthoc_analysis=True,  # Run full TER analysis
+    enable_learning=True,        # Adjust thresholds based on feedback
+)
+
+print(f"Session TER: {final_report.get('posthoc_ter', 'N/A')}")
+print(f"Waste: {final_report['waste_percentage']:.1f}%")
+```
+
+#### Features
+
+- ⚡ **5 real-time detectors** - Duplicate tool calls, repetitive reads, edit fragmentation, bash antipatterns, failed retries
+- 🔔 **Desktop notifications** - Native alerts on macOS/Linux/Windows
+- 📊 **Live dashboard** - Real-time terminal UI (optional)
+- 🧠 **Adaptive learning** - Auto-adjusts detection thresholds based on feedback
+- ⚙️  **Configurable** - Enable/disable patterns via `~/.ter/config.yaml`
+
+#### Configuration
+
+First run creates `~/.ter/config.yaml`:
+
+```yaml
+patterns:
+  repetitive_reads:
+    enabled: true
+    min_reads: 3        # Alert after 3rd read of same file
+  edit_fragmentation:
+    enabled: true
+    min_consecutive: 3  # Alert after 3 consecutive edits
+
+notifications:
+  desktop_notifications: true
+  severity_filter: ["warning", "critical"]  # Which alerts to show
+
+learning:
+  enabled: true
+  auto_adjust_thresholds: true  # Learn from feedback
+  target_precision: 0.80
+  target_recall: 0.70
+```
+
+See [TUTORIALS.md](TUTORIALS.md#real-time-monitoring) for detailed integration guide.
 
 ## Try It
 
